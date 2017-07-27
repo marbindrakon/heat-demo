@@ -1,0 +1,105 @@
+heat_template_version: '2016-10-14'
+
+parameters:
+    flavor:
+        type: string
+        default: medium 
+    image:
+        type: string
+        default: centos-7
+    keypair:
+        type: string
+        default: undercloud
+    external_net1:
+        type: string
+        default: ext-net
+    external_net2:
+        type: string
+        default: ext-net
+    security_subnet_cidr:
+        type: string
+        default: 10.39.10.0/24
+    security_subnet_pool_start:
+        type: string
+        default: 10.39.10.10
+    security_subnet_pool_end:
+        type: string
+        default: 10.39.10.200
+
+resources:
+    security-net:
+        type: OS::Neutron::Net
+        properties:
+            name:
+                list_join:
+                    - '-'
+                    - - {get_param: 'OS::stack_name'}
+                      - security
+    security-sub:
+        type: OS::Neutron::Subnet
+        properties:
+            network_id: {get_resource: security-net}
+            cidr: { get_param: security_subnet_cidr}
+            allocation_pools:
+              - start: {get_param: security_subnet_pool_start}
+                end: {get_param: security_subnet_pool_end}
+
+    ext-router:
+        type: OS::Neutron::Router
+        properties:
+            external_gateway_info:
+                network: {get_param: external_net1}
+    security-rtr:
+        type: OS::Neutron::RouterInterface
+        properties:
+            router_id: {get_resource: ext-router}
+            subnet_id: {get_resource: security-sub}
+
+    security-sg:
+        type: OS::Neutron::SecurityGroup
+        properties:
+            name: 
+                list_join:
+                    - '-'
+                    - - {get_param: 'OS::stack_name'}
+                      - security-sg
+            rules:
+                - remote_ip_prefix: 0.0.0.0/0
+                  protocol: tcp
+                  port_range_min: 22
+                  port_range_max: 22
+
+                - remote_ip_prefix: 0.0.0.0/0
+                  protocol: icmp
+
+    security-group:
+        type: OS::Heat::ResourceGroup
+        properties:
+            count: 3
+            resource_def:
+                type: ./include/centos_server.yaml
+                properties:
+                    network: {get_resource: security-net}
+                    image: {get_param: image}
+                    sec_group: {get_resource: security-sg}
+                    key_name: {get_param: keypair}
+                    flavor: {get_param: flavor}
+                    subnet: {get_resource: security-sub}
+                    user_data: ''
+    app1_stack:
+        type: three-tier.yaml
+        properties:
+            flavor: {get_param: flavor}
+            image: {get_param: image}
+            keypair: {get_param: keypair}
+            external_net: {get_param: external_net1}
+            security_sg: {get_resource: security-sg}
+
+    app2_stack:
+        type: three-tier.yaml
+        properties:
+            flavor: {get_param: flavor}
+            image: {get_param: image}
+            keypair: {get_param: keypair}
+            external_net: {get_param: external_net2}
+            security_sg: {get_resource: security-sg}

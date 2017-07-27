@@ -1,0 +1,270 @@
+heat_template_version: 2016-10-14
+
+description: A simple three-tier application layout. The web tier will serve a simple static page. The app and data tiers will be bare VMs.
+
+parameters:
+    flavor:
+        type: string
+        default: medium 
+    image:
+        type: string
+        default: centos-7
+    keypair:
+        type: string
+        default: undercloud
+    external_net:
+        type: string
+        default: ext-net
+    security_sg:
+        type: string
+        default: 0a4d52a6-28c7-4e75-942a-392ae805e0b7
+    web_subnet_cidr:
+        type: string
+        default: 10.35.10.0/24
+    web_subnet_pool_start:
+        type: string
+        default: 10.35.10.10
+    web_subnet_pool_end:
+        type: string
+        default: 10.35.10.200
+    app_subnet_cidr:
+        type: string
+        default: 10.36.10.0/24
+    app_subnet_pool_start:
+        type: string
+        default: 10.36.10.10
+    app_subnet_pool_end:
+        type: string
+        default: 10.36.10.200
+    data_subnet_cidr:
+        type: string
+        default: 10.37.10.0/24
+    data_subnet_pool_start:
+        type: string
+        default: 10.37.10.10
+    data_subnet_pool_end:
+        type: string
+        default: 10.37.10.200
+
+resources:
+    web-net:
+        type: OS::Neutron::Net
+        properties:
+            name:
+                list_join:
+                    - '-'
+                    - - {get_param: 'OS::stack_name'}
+                      - web
+    web-sub:
+        type: OS::Neutron::Subnet
+        properties:
+            network_id: {get_resource: web-net}
+            cidr: { get_param: web_subnet_cidr}
+            allocation_pools:
+              - start: {get_param: web_subnet_pool_start}
+                end: {get_param: web_subnet_pool_end}
+    app-net:
+        type: OS::Neutron::Net
+        properties:
+            name:
+                list_join:
+                    - '-'
+                    - - {get_param: 'OS::stack_name'}
+                      - app
+    app-sub:
+        type: OS::Neutron::Subnet
+        properties:
+            network_id: {get_resource: app-net}
+            cidr: { get_param: app_subnet_cidr}
+            allocation_pools:
+              - start: {get_param: app_subnet_pool_start}
+                end: {get_param: app_subnet_pool_end}
+    data-net:
+        type: OS::Neutron::Net
+        properties:
+            name:
+                list_join:
+                    - '-'
+                    - - {get_param: 'OS::stack_name'}
+                      - data
+    data-sub:
+        type: OS::Neutron::Subnet
+        properties:
+            network_id: {get_resource: data-net}
+            cidr: { get_param: data_subnet_cidr}
+            allocation_pools:
+              - start: {get_param: data_subnet_pool_start}
+                end: {get_param: data_subnet_pool_end}
+    ext-router:
+        type: OS::Neutron::Router
+        properties:
+            external_gateway_info:
+                network: {get_param: external_net}
+    web-rtr:
+        type: OS::Neutron::RouterInterface
+        properties:
+            router_id: {get_resource: ext-router}
+            subnet_id: {get_resource: web-sub}
+    data-rtr:
+        type: OS::Neutron::RouterInterface
+        properties:
+            router_id: {get_resource: ext-router}
+            subnet_id: {get_resource: data-sub}
+    app-rtr:
+        type: OS::Neutron::RouterInterface
+        properties:
+            router_id: {get_resource: ext-router}
+            subnet_id: {get_resource: app-sub}
+    monitor:
+        type: OS::Neutron::LBaaS::HealthMonitor
+        properties:
+            delay: 3
+            type: HTTP
+            timeout: 3
+            max_retries: 3
+            pool: {get_resource: pool}
+    pool:
+        type: OS::Neutron::LBaaS::Pool
+        properties:
+            lb_algorithm: ROUND_ROBIN
+            protocol: HTTP
+            listener: {get_resource: listener}
+    listener:
+        type: OS::Neutron::LBaaS::Listener
+        properties:
+            loadbalancer: {get_resource: loadbalancer}
+            protocol: HTTP
+            protocol_port: 80
+    loadbalancer:
+        type: OS::Neutron::LBaaS::LoadBalancer
+        properties:
+            vip_subnet: {get_resource: web-sub}
+    floating_ip:
+        type: OS::Neutron::FloatingIP
+        properties:
+            floating_network: {get_param: external_net}
+            port_id: {get_attr: [loadbalancer, vip_port_id]}
+    web-sg:
+        type: OS::Neutron::SecurityGroup
+        properties:
+            name: 
+                list_join:
+                    - '-'
+                    - - {get_param: 'OS::stack_name'}
+                      - web-sg
+            rules:
+                - remote_ip_prefix: 0.0.0.0/0
+                  protocol: tcp
+                  port_range_min: 80
+                  port_range_max: 80
+
+                - remote_ip_prefix: 0.0.0.0/0
+                  protocol: icmp
+
+                - remote_mode: remote_group_id
+                  remote_group_id: {get_param: security_sg}
+                  protocol: tcp
+                  port_range_min: 22
+                  port_range_max: 22
+
+    app-sg:
+        type: OS::Neutron::SecurityGroup
+        properties:
+            name: 
+                list_join:
+                    - '-'
+                    - - {get_param: 'OS::stack_name'}
+                      - app-sg
+            rules:
+                - remote_mode: remote_group_id
+                  remote_group_id: {get_resource: web-sg}
+                  protocol: tcp
+                  port_range_min: 8080
+                  port_range_max: 8080
+
+                - remote_ip_prefix: 0.0.0.0/0
+                  protocol: icmp
+                
+                - remote_group_id: {get_param: security_sg}
+                  protocol: tcp
+                  port_range_min: 22
+                  port_range_max: 22
+    data-sg:
+        type: OS::Neutron::SecurityGroup
+        properties:
+            name: 
+                list_join:
+                    - '-'
+                    - - {get_param: 'OS::stack_name'}
+                      - data-sg
+            rules:
+                - remote_mode: remote_group_id
+                  remote_group_id: {get_resource: web-sg}
+                  protocol: tcp
+                  port_range_min: 3306
+                  port_range_max: 3306
+
+                - remote_ip_prefix: 0.0.0.0/0
+                  protocol: icmp
+                
+                - remote_group_id: {get_param: security_sg}
+                  protocol: tcp
+                  port_range_min: 22
+                  port_range_max: 22
+
+    web-script:
+        type: OS::Heat::SoftwareConfig
+        properties:
+            group: ungrouped
+            config: {get_file: ./include/web-server.sh}
+    user-data:
+        type: OS::Heat::MultipartMime
+        properties:
+            parts:
+                - config: {get_resource: web-script}
+
+    web-group:
+        type: OS::Heat::ResourceGroup
+        properties:
+            count: 3
+            resource_def:
+                type: ./include/lb_server.yaml
+                properties:
+                    network: {get_resource: web-net}
+                    image: {get_param: image}
+                    sec_group: {get_resource: web-sg}
+                    key_name: {get_param: keypair}
+                    flavor: {get_param: flavor}
+                    pool_id: {get_resource: pool}
+                    subnet: {get_resource: web-sub}
+                    user_data: {get_resource: user-data}
+
+    app-group:
+        type: OS::Heat::ResourceGroup
+        properties:
+            count: 3
+            resource_def:
+                type: ./include/centos_server.yaml
+                properties:
+                    network: {get_resource: app-net}
+                    image: {get_param: image}
+                    sec_group: {get_resource: app-sg}
+                    key_name: {get_param: keypair}
+                    flavor: {get_param: flavor}
+                    subnet: {get_resource: app-sub}
+                    user_data: ''
+
+    data-group:
+        type: OS::Heat::ResourceGroup
+        properties:
+            count: 3
+            resource_def:
+                type: ./include/centos_server.yaml
+                properties:
+                    network: {get_resource: data-net}
+                    image: {get_param: image}
+                    sec_group: {get_resource: data-sg}
+                    key_name: {get_param: keypair}
+                    flavor: {get_param: flavor}
+                    subnet: {get_resource: data-sub}
+                    user_data: ''
